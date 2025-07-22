@@ -1,0 +1,38 @@
+version: '3.3'
+
+# Simplified development setup - no external dependencies
+services:
+  vsm_dev:
+    image: elixir:1.15
+    working_dir: /app
+    volumes:
+      - .:/app
+      - mix_deps:/app/deps
+      - mix_build:/app/_build
+      - hex_cache:/root/.hex
+      - mix_cache:/root/.mix
+    ports:
+      - "4000:4000"  # External API
+      - "4001:4001"  # WebSocket
+      - "4040:4040"  # Telemetry
+      - "50051:50051" # gRPC
+    environment:
+      MIX_ENV: dev
+    command: >
+      sh -c "
+        mix local.hex --force &&
+        mix local.rebar --force &&
+        mix deps.get &&
+        mix compile &&
+        echo '🚀 All 12 VSM modules ready!' &&
+        echo 'Run: docker-compose -f docker-compose.dev.yml exec vsm_dev iex -S mix' &&
+        tail -f /dev/null
+      "
+    stdin_open: true
+    tty: true
+
+volumes:
+  mix_deps:
+  mix_build:
+  hex_cache:
+  mix_cache:

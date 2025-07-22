@@ -1,0 +1,62 @@
+# Dependencies
+deps/
+_build/
+.elixir_ls/
+
+# Temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test files
+cover/
+test/
+.github/
+.gitlab/
+
+# Development files
+.env
+.env.*
+!.env.example
+*.secret.exs
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+*.md
+docs/
+vsm-docs/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS files
+Thumbs.db
+
+# Backups
+backups/
+*.backup
+
+# Demo and test scripts
+DEMO_*.exs
+TEST_*.exs
+RUN_*.exs
+*_PROOF.exs
+*_10_OUT_OF_10.exs

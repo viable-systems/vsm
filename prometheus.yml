@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'vsm_telemetry'
+    static_configs:
+      - targets: ['vsm:4040']
+    metrics_path: '/metrics'
+    
+  - job_name: 'vsm_pattern_engine'
+    static_configs:
+      - targets: ['vsm:4040']
+    metrics_path: '/metrics/patterns'
+    
+  - job_name: 'vsm_security'
+    static_configs:
+      - targets: ['vsm:4040']
+    metrics_path: '/metrics/security'
+    
+  - job_name: 'vsm_core'
+    static_configs:
+      - targets: ['vsm:4040']
+    metrics_path: '/metrics/core'

@@ -1,0 +1,154 @@
+version: '3.3'
+
+services:
+  # PostgreSQL for any modules that need persistence
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: vsm
+      POSTGRES_PASSWORD: vsm_secure_password
+      POSTGRES_DB: vsm_prod
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vsm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and pub/sub
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Main VSM ecosystem
+  vsm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Database
+      DATABASE_URL: "ecto://vsm:vsm_secure_password@postgres/vsm_prod"
+      
+      # Redis
+      REDIS_URL: "redis://redis:6379"
+      
+      # Phoenix
+      PHX_HOST: ${PHX_HOST:-localhost}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:-vsmSecretKeyBase1234567890123456789012345678901234567890123456789012345678901234567890}
+      
+      # VSM Configuration
+      VSM_CORE_SYSTEMS: "production_plant,supply_chain,logistics"
+      VSM_PATTERN_ENGINE_ENABLED: "true"
+      VSM_SECURITY_Z3N_ENABLED: "true"
+      VSM_TELEMETRY_INTERVAL: "5000"
+      
+      # External APIs
+      VSM_EXTERNAL_API_PORT: "4000"
+      VSM_WEBSOCKET_PORT: "4001"
+      VSM_GRPC_PORT: "50051"
+      VSM_TELEMETRY_PORT: "4040"
+    ports:
+      - "4000:4000"  # External API
+      - "4001:4001"  # WebSocket
+      - "4040:4040"  # Telemetry Dashboard
+      - "50051:50051" # gRPC
+    volumes:
+      - vsm_data:/app/data
+      - vsm_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - vsm
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  # Vector store dedicated instance (optional)
+  vector_store:
+    build:
+      context: .
+      dockerfile: Dockerfile.vector
+    environment:
+      VECTOR_STORE_PORT: "8000"
+      VECTOR_DIMENSIONS: "1536"
+      VECTOR_INDEX_TYPE: "hnsw"
+    ports:
+      - "8000:8000"
+    volumes:
+      - vector_data:/app/vectors
+    profiles:
+      - vector
+
+  # Pattern engine analytics (optional)
+  pattern_analytics:
+    build:
+      context: .
+      dockerfile: Dockerfile.analytics
+    depends_on:
+      - vsm
+    environment:
+      VSM_API_URL: "http://vsm:4000"
+      ANALYTICS_PORT: "8080"
+    ports:
+      - "8080:8080"
+    profiles:
+      - analytics
+
+volumes:
+  postgres_data:
+  redis_data:
+  vsm_data:
+  vsm_logs:
+  prometheus_data:
+  grafana_data:
+  vector_data:
+
+networks:
+  default:
+    name: vsm_network

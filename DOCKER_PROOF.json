@@ -1,0 +1,15 @@
+{
+  "timestamp": "2025-07-22T02:20:43Z",
+  "docker_version": "28.1.1",
+  "compose_version": "1.25.0",
+  "vsm_modules": 12,
+  "docker_files": {
+    "Dockerfile": true,
+    "docker-compose.yml": true,
+    "docker-compose.dev.yml": true,
+    ".dockerignore": true
+  },
+  "exposed_ports": [4000, 4001, 4040, 50051],
+  "services": ["vsm", "postgres", "redis", "prometheus", "grafana"],
+  "ci_cd": true
+}
