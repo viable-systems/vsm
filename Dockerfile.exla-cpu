@@ -1,0 +1,109 @@
+# VSM with EXLA CPU Support
+FROM elixir:1.17 AS builder
+
+# Install dependencies for EXLA
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    git \
+    curl \
+    python3 \
+    python3-pip \
+    python3-venv \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set EXLA for CPU
+ENV XLA_TARGET=cpu
+ENV EXLA_TARGET=cpu
+ENV EXLA_RUNTIME=cpu
+ENV MIX_ENV=prod
+
+WORKDIR /app
+
+# Install hex and rebar
+RUN mix local.hex --force && \
+    mix local.rebar --force
+
+# First, create a minimal project to download EXLA
+RUN mix new exla_setup --module ExlaSetup
+WORKDIR /app/exla_setup
+
+# Add EXLA dependency
+RUN echo 'defp deps do' > mix.exs && \
+    echo '  [{:exla, "~> 0.10.0"}]' >> mix.exs && \
+    echo 'end' >> mix.exs && \
+    echo 'defmodule ExlaSetup.MixProject do' >> mix.exs && \
+    echo '  use Mix.Project' >> mix.exs && \
+    echo '  def project do' >> mix.exs && \
+    echo '    [app: :exla_setup, version: "0.1.0", elixir: "~> 1.17", deps: deps()]' >> mix.exs && \
+    echo '  end' >> mix.exs && \
+    echo 'end' >> mix.exs
+
+# Get and compile EXLA for CPU
+RUN mix deps.get
+RUN mix deps.compile exla
+
+# Now build VSM
+WORKDIR /app
+RUN rm -rf exla_setup
+
+# Copy VSM files
+COPY mix.exs mix.lock ./
+COPY config config
+
+# Create EXLA config
+RUN mkdir -p config && \
+    echo 'import Config' > config/runtime.exs && \
+    echo '' >> config/runtime.exs && \
+    echo 'config :nx, :default_backend, EXLA.Backend' >> config/runtime.exs && \
+    echo '' >> config/runtime.exs && \
+    echo 'config :exla, :clients,' >> config/runtime.exs && \
+    echo '  default: [platform: :host],' >> config/runtime.exs && \
+    echo '  host: [platform: :host]' >> config/runtime.exs
+
+# Copy apps
+COPY apps apps
+
+# Get dependencies
+RUN mix deps.get --only prod
+
+# Compile EXLA first
+RUN mix deps.compile exla
+
+# Compile everything else
+RUN mix deps.compile
+RUN mix compile
+
+# Runtime image
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    libstdc++6 \
+    openssl \
+    libncurses5 \
+    locales \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
+ENV LANG en_US.UTF-8
+ENV LANGUAGE en_US:en
+ENV LC_ALL en_US.UTF-8
+
+WORKDIR /app
+RUN useradd -m -s /bin/bash app
+
+# Copy from builder
+COPY --from=builder --chown=app:app /app /app
+
+USER app
+
+ENV MIX_ENV=prod
+ENV XLA_TARGET=cpu
+ENV EXLA_TARGET=cpu
+ENV HOME=/app
+
+EXPOSE 4000 4001 4040 50051
+
+CMD ["mix", "phx.server"]

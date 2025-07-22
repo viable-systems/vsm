@@ -1,0 +1,139 @@
+name: Docker Build with EXLA CPU
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Log in to the Container registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push EXLA CPU image
+      run: |
+        # Create build directory
+        BUILD_DIR="docker_build_exla"
+        rm -rf $BUILD_DIR
+        mkdir -p $BUILD_DIR
+        
+        # Copy files
+        cp -r . $BUILD_DIR/
+        
+        # Create Dockerfile with EXLA CPU support
+        cat > $BUILD_DIR/Dockerfile << 'EOF'
+        FROM elixir:1.17 AS builder
+        
+        # Install build dependencies for EXLA
+        RUN apt-get update && apt-get install -y \
+            build-essential \
+            git \
+            curl \
+            python3 \
+            python3-pip \
+            python3-dev \
+            cmake \
+            && rm -rf /var/lib/apt/lists/*
+        
+        # Set EXLA to CPU mode
+        ENV XLA_TARGET=cpu
+        ENV EXLA_TARGET=cpu
+        ENV MIX_ENV=prod
+        
+        WORKDIR /app
+        
+        # Install hex and rebar
+        RUN mix local.hex --force && \
+            mix local.rebar --force
+        
+        # Copy umbrella files
+        COPY mix.exs mix.lock ./
+        COPY config config
+        
+        # Add EXLA CPU configuration
+        RUN mkdir -p config && \
+            echo 'import Config' >> config/runtime.exs && \
+            echo '' >> config/runtime.exs && \
+            echo 'config :nx, :default_backend, EXLA.Backend' >> config/runtime.exs && \
+            echo '' >> config/runtime.exs && \
+            echo 'config :exla, :clients,' >> config/runtime.exs && \
+            echo '  cuda: [platform: :host],' >> config/runtime.exs && \
+            echo '  rocm: [platform: :host],' >> config/runtime.exs && \
+            echo '  tpu: [platform: :host],' >> config/runtime.exs && \
+            echo '  host: [platform: :host]' >> config/runtime.exs
+        
+        # Copy apps
+        COPY apps apps
+        
+        # First, get deps without compiling
+        RUN mix deps.get --only prod
+        
+        # Download EXLA precompiled binary for CPU
+        RUN cd deps/xla && \
+            mix download --platform cpu --runtime cpu
+        
+        # Now compile deps
+        RUN mix deps.compile
+        
+        # Compile apps
+        RUN mix compile
+        
+        # Runtime stage
+        FROM debian:bookworm-slim
+        
+        RUN apt-get update && apt-get install -y \
+            libstdc++6 \
+            openssl \
+            libncurses5 \
+            locales \
+            ca-certificates \
+            curl \
+            && rm -rf /var/lib/apt/lists/*
+        
+        RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
+        ENV LANG en_US.UTF-8
+        ENV LANGUAGE en_US:en
+        ENV LC_ALL en_US.UTF-8
+        
+        WORKDIR /app
+        RUN useradd -m -s /bin/bash app
+        
+        # Copy everything from builder
+        COPY --from=builder --chown=app:app /app /app
+        
+        USER app
+        
+        ENV MIX_ENV=prod
+        ENV XLA_TARGET=cpu
+        ENV EXLA_TARGET=cpu
+        
+        EXPOSE 4000 4001 4040 50051
+        
+        CMD ["mix", "phx.server"]
+        EOF
+        
+        cd $BUILD_DIR
+        
+        # Build and push
+        docker build -t ghcr.io/${{ github.repository }}:exla-cpu .
+        docker push ghcr.io/${{ github.repository }}:exla-cpu
+        
+        echo "✅ Successfully pushed EXLA CPU image!"
+        echo "Pull with: docker pull ghcr.io/${{ github.repository }}:exla-cpu"
