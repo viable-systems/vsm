@@ -1,0 +1,66 @@
+# VSM 12-Module Ecosystem - CPU-optimized with EXLA
+FROM elixir:1.17
+
+# Install build dependencies including CPU-optimized libraries
+RUN apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    nodejs \
+    npm \
+    postgresql-client \
+    # For EXLA CPU compilation
+    python3 \
+    python3-pip \
+    python3-numpy \
+    cmake \
+    liblapack-dev \
+    libblas-dev
+
+# Set environment for CPU-only EXLA
+ENV XLA_TARGET=cpu
+ENV EXLA_TARGET=host
+ENV MIX_ENV=prod
+
+# Create app directory
+WORKDIR /app
+
+# Install hex and rebar
+RUN mix local.hex --force && \
+    mix local.rebar --force
+
+# Copy umbrella project files
+COPY mix.exs mix.lock ./
+COPY config config
+
+# Create apps directory and copy everything
+RUN mkdir -p apps
+COPY apps apps
+
+# Ensure EXLA is configured for CPU in all environments
+RUN echo 'import Config' > config/runtime.exs && \
+    echo '' >> config/runtime.exs && \
+    echo 'config :exla, :clients,' >> config/runtime.exs && \
+    echo '  default: [platform: :host],' >> config/runtime.exs && \
+    echo '  host: [platform: :host]' >> config/runtime.exs
+
+# Un-comment EXLA dependency since we're using CPU mode
+RUN sed -i 's/# {:exla,/{:exla,/' apps/vsm_security/mix.exs || true
+
+# Get dependencies
+RUN mix deps.get --only $MIX_ENV
+
+# Compile dependencies (EXLA will compile for CPU)
+RUN mix deps.compile
+
+# Compile the apps
+RUN mix compile
+
+# Expose ports
+EXPOSE 4000 4001 4040 50051
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:4000/health || exit 1
+
+# Start command
+CMD ["mix", "phx.server"]
