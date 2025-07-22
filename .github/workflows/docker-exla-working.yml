@@ -1,0 +1,145 @@
+name: Docker EXLA Working Build
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Log in to the Container registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build EXLA CPU image properly
+      run: |
+        # Create Dockerfile that handles EXLA compilation correctly
+        cat > Dockerfile.exla-working << 'EOF'
+        FROM elixir:1.17
+        
+        # Install all required dependencies for XLA/EXLA compilation
+        RUN apt-get update && apt-get install -y \
+            build-essential \
+            git \
+            curl \
+            wget \
+            python3 \
+            python3-pip \
+            python3-dev \
+            python3-numpy \
+            python3-wheel \
+            python3-setuptools \
+            # Required for XLA build
+            cmake \
+            zlib1g-dev \
+            libblas-dev \
+            liblapack-dev \
+            # Additional tools
+            unzip \
+            && rm -rf /var/lib/apt/lists/*
+        
+        # Install Bazel (required for XLA compilation from source)
+        RUN wget https://github.com/bazelbuild/bazel/releases/download/6.1.0/bazel-6.1.0-linux-x86_64 -O /usr/local/bin/bazel && \
+            chmod +x /usr/local/bin/bazel
+        
+        # Set up EXLA for CPU
+        ENV MIX_ENV=prod
+        ENV XLA_TARGET=cpu
+        ENV EXLA_TARGET=cpu
+        ENV EXLA_FLAGS="--config=mkl_open_source_only"
+        ENV TF_NEED_CUDA=0
+        ENV TF_NEED_ROCM=0
+        
+        WORKDIR /app
+        
+        # Install hex and rebar
+        RUN mix local.hex --force && \
+            mix local.rebar --force
+        
+        # First, create a test project to download EXLA properly
+        RUN mix new test_exla --module TestExla
+        WORKDIR /app/test_exla
+        
+        # Add EXLA and XLA dependencies
+        RUN echo 'defmodule TestExla.MixProject do' > mix.exs && \
+            echo '  use Mix.Project' >> mix.exs && \
+            echo '  def project do' >> mix.exs && \
+            echo '    [app: :test_exla, version: "0.1.0", elixir: "~> 1.17", deps: deps()]' >> mix.exs && \
+            echo '  end' >> mix.exs && \
+            echo '  defp deps do' >> mix.exs && \
+            echo '    [{:xla, "~> 0.9.1"}, {:exla, "~> 0.10.0"}]' >> mix.exs && \
+            echo '  end' >> mix.exs && \
+            echo 'end' >> mix.exs
+        
+        # Create config for CPU mode
+        RUN mkdir -p config && \
+            echo 'import Config' > config/config.exs && \
+            echo 'config :exla, :clients,' >> config/config.exs && \
+            echo '  default: [platform: :host],' >> config/config.exs && \
+            echo '  host: [platform: :host]' >> config/config.exs
+        
+        # Get dependencies
+        RUN mix deps.get
+        
+        # Compile XLA first (this is the key!)
+        RUN mix deps.compile xla --include-children
+        
+        # Now compile EXLA (should work now that XLA is available)
+        RUN mix deps.compile exla
+        
+        # Go back to main app
+        WORKDIR /app
+        RUN rm -rf test_exla
+        
+        # Copy VSM files
+        COPY . .
+        
+        # Copy the compiled EXLA deps
+        RUN mkdir -p _build/prod/lib && \
+            cp -r /root/.cache/mix _build/prod/
+        
+        # Build VSM with EXLA already compiled
+        RUN mix deps.get --only prod
+        RUN mix deps.compile
+        RUN mix compile
+        
+        # Create startup script
+        RUN echo '#!/bin/bash' > /app/start.sh && \
+            echo 'echo "🚀 VSM with EXLA CPU Support 🚀"' >> /app/start.sh && \
+            echo 'echo "==============================="' >> /app/start.sh && \
+            echo 'echo ""' >> /app/start.sh && \
+            echo 'echo "EXLA Configuration:"' >> /app/start.sh && \
+            echo 'echo "  XLA_TARGET=$XLA_TARGET"' >> /app/start.sh && \
+            echo 'echo "  EXLA_TARGET=$EXLA_TARGET"' >> /app/start.sh && \
+            echo 'echo ""' >> /app/start.sh && \
+            echo 'echo "Starting VSM..."' >> /app/start.sh && \
+            echo 'mix phx.server' >> /app/start.sh && \
+            chmod +x /app/start.sh
+        
+        EXPOSE 4000 4001 4040 50051
+        
+        CMD ["/app/start.sh"]
+        EOF
+        
+        # Build and push
+        docker build -f Dockerfile.exla-working -t ghcr.io/${{ github.repository }}:exla-cpu-working .
+        docker push ghcr.io/${{ github.repository }}:exla-cpu-working
+        
+        echo "✅ EXLA CPU image built successfully!"
+        echo "Pull with: docker pull ghcr.io/${{ github.repository }}:exla-cpu-working"

@@ -1,0 +1,127 @@
+name: Docker EXLA Prebuilt
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Log in to the Container registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build with prebuilt EXLA
+      run: |
+        # Prepare build directory with resolved symlinks
+        BUILD_DIR="exla_build"
+        rm -rf $BUILD_DIR
+        mkdir -p $BUILD_DIR
+        
+        # Copy files
+        cp mix.exs mix.lock $BUILD_DIR/
+        cp -r config $BUILD_DIR/
+        mkdir -p $BUILD_DIR/apps
+        
+        # Copy apps following symlinks
+        for app in apps/*; do
+          if [ -e "$app" ]; then
+            cp -rL "$app" "$BUILD_DIR/apps/" 2>/dev/null || true
+          fi
+        done
+        
+        # Create Dockerfile using prebuilt EXLA
+        cat > $BUILD_DIR/Dockerfile << 'EOF'
+        FROM elixir:1.17
+        
+        # Install runtime dependencies
+        RUN apt-get update && apt-get install -y \
+            build-essential \
+            git \
+            curl \
+            && rm -rf /var/lib/apt/lists/*
+        
+        # EXLA CPU configuration
+        ENV MIX_ENV=prod
+        ENV XLA_TARGET=cpu
+        ENV EXLA_TARGET=cpu
+        ENV ELIXIR_ERL_OPTIONS="+fnu"
+        
+        WORKDIR /app
+        
+        # Install hex and rebar
+        RUN mix local.hex --force && \
+            mix local.rebar --force
+        
+        # Copy application
+        COPY . .
+        
+        # Configure EXLA for CPU in runtime
+        RUN echo 'import Config' >> config/runtime.exs && \
+            echo '' >> config/runtime.exs && \
+            echo 'if config_env() == :prod do' >> config/runtime.exs && \
+            echo '  config :nx, default_backend: EXLA.Backend' >> config/runtime.exs && \
+            echo '  config :nx, default_defn_options: [compiler: EXLA, client: :host]' >> config/runtime.exs && \
+            echo '' >> config/runtime.exs && \
+            echo '  config :exla, :clients,' >> config/runtime.exs && \
+            echo '    default: [platform: :host],' >> config/runtime.exs && \
+            echo '    host: [platform: :host]' >> config/runtime.exs && \
+            echo 'end' >> config/runtime.exs
+        
+        # Update EXLA version to one with better prebuilt support
+        RUN find . -name "mix.exs" -exec sed -i 's/{:exla, "~> 0.10.0"/{:exla, "~> 0.7.3"/' {} \;
+        
+        # Get and compile dependencies
+        RUN mix deps.get --only prod
+        
+        # The key: Let EXLA download prebuilt binaries
+        RUN EXLA_TARGET=cpu mix deps.compile
+        
+        # Compile the rest
+        RUN mix compile
+        
+        # Create info script
+        RUN echo '#!/bin/bash' > /app/info.sh && \
+            echo 'echo "🚀 VSM with EXLA CPU (Prebuilt) 🚀"' >> /app/info.sh && \
+            echo 'echo "==================================="' >> /app/info.sh && \
+            echo 'echo ""' >> /app/info.sh && \
+            echo 'echo "Configuration:"' >> /app/info.sh && \
+            echo 'echo "  • EXLA_TARGET: $EXLA_TARGET"' >> /app/info.sh && \
+            echo 'echo "  • XLA_TARGET: $XLA_TARGET"' >> /app/info.sh && \
+            echo 'echo "  • Platform: CPU (host)"' >> /app/info.sh && \
+            echo 'echo ""' >> /app/info.sh && \
+            echo 'echo "Modules: $(ls -1 apps/ | wc -l)"' >> /app/info.sh && \
+            echo 'ls -1 apps/ | sed "s/^/  • /"' >> /app/info.sh && \
+            echo 'echo ""' >> /app/info.sh && \
+            echo 'echo "Starting IEx with EXLA..."' >> /app/info.sh && \
+            echo 'iex -S mix' >> /app/info.sh && \
+            chmod +x /app/info.sh
+        
+        EXPOSE 4000 4001 4040 50051
+        
+        CMD ["/app/info.sh"]
+        EOF
+        
+        # Build and push
+        cd $BUILD_DIR
+        docker build -t ghcr.io/${{ github.repository }}:exla-prebuilt .
+        docker push ghcr.io/${{ github.repository }}:exla-prebuilt
+        
+        echo "✅ EXLA Prebuilt image pushed!"
+        echo "Pull with: docker pull ghcr.io/${{ github.repository }}:exla-prebuilt"
