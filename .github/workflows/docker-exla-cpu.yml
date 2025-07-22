@@ -29,16 +29,10 @@ jobs:
 
     - name: Build and push EXLA CPU image
       run: |
-        # Create build directory
-        BUILD_DIR="docker_build_exla"
-        rm -rf $BUILD_DIR
-        mkdir -p $BUILD_DIR
-        
-        # Copy files
-        cp -r . $BUILD_DIR/
+        # No need for a separate build directory, just create Dockerfile here
         
         # Create Dockerfile with EXLA CPU support
-        cat > $BUILD_DIR/Dockerfile << 'EOF'
+        cat > Dockerfile.exla << 'EOF'
         FROM elixir:1.17 AS builder
         
         # Install build dependencies for EXLA
@@ -129,10 +123,8 @@ jobs:
         CMD ["mix", "phx.server"]
         EOF
         
-        cd $BUILD_DIR
-        
         # Build and push
-        docker build -t ghcr.io/${{ github.repository }}:exla-cpu .
+        docker build -f Dockerfile.exla -t ghcr.io/${{ github.repository }}:exla-cpu .
         docker push ghcr.io/${{ github.repository }}:exla-cpu
         
         echo "✅ Successfully pushed EXLA CPU image!"
